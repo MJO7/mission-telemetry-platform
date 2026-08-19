@@ -25,6 +25,15 @@ class Settings(BaseSettings):
 
     environment: str = "development"
 
+    # Explicit origin allowlist, not "*": the refresh cookie flow requires
+    # allow_credentials=True on the CORS middleware, and browsers reject
+    # allow_credentials paired with a wildcard origin outright (and it
+    # would be the wrong call even if they didn't -- a same-origin-with-
+    # cookies API shouldn't answer every origin on the internet). Vite's
+    # dev server is the only caller in Phase 2; a deployed frontend's
+    # origin gets added here via API_CORS_ORIGINS, not by loosening this.
+    cors_origins: list[str] = ["http://localhost:5173"]
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -1,4 +1,4 @@
-.PHONY: dev migrate api test
+.PHONY: dev migrate api test web web-install web-test
 
 dev:
 	docker compose up -d
@@ -12,3 +12,12 @@ api:
 
 test:
 	cd services/api-service && . .venv/bin/activate && pytest -q
+
+web-install:
+	cd web && npm install
+
+web:
+	cd web && npm run dev
+
+web-test:
+	cd web && npm test

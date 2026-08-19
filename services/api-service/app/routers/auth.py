@@ -13,12 +13,17 @@ token, which we DO return in the body since it's short-lived and needed
 in the Authorization header by design).
 """
 
+import uuid
+from typing import Annotated
+
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Response, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.db import get_session
+from app.core.rbac import CurrentUser, get_current_user
 from app.core.refresh import (
     RefreshTokenInvalid,
     RefreshTokenReused,
@@ -27,7 +32,7 @@ from app.core.refresh import (
 )
 from app.core.security import create_access_token, hash_password, verify_password
 from app.models.tenancy import Organization, Role, User
-from app.schemas.auth import LoginRequest, RegisterOrgRequest, TokenResponse
+from app.schemas.auth import LoginRequest, RegisterOrgRequest, TokenResponse, UserOut
 
 router = APIRouter(prefix="/v1/auth", tags=["auth"])
 settings = get_settings()
@@ -55,7 +60,16 @@ async def register_org(
 ) -> TokenResponse:
     org = Organization(name=body.org_name, slug=body.org_name.lower().replace(" ", "-"))
     session.add(org)
-    await session.flush()
+    try:
+        await session.flush()
+    except IntegrityError as exc:
+        # organizations.name (and its derived slug) are unique -- a
+        # second org registering with a name already in use hits this,
+        # not a validation error, so it wasn't caught by RegisterOrgRequest.
+        await session.rollback()
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "an organization with this name already exists"
+        ) from exc
 
     user = User(
         org_id=org.id,
@@ -128,3 +142,17 @@ async def refresh(
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
 async def logout(response: Response) -> None:
     response.delete_cookie(REFRESH_COOKIE, path="/v1/auth")
+
+
+@router.get("/me", response_model=UserOut)
+async def me(
+    user: Annotated[CurrentUser, Depends(get_current_user)],
+    session: AsyncSession = Depends(get_session),
+) -> User:
+    # Deliberately a DB read, not a field pulled from the JWT payload:
+    # the token only carries what authorization checks need (id, org_id,
+    # role -- see app/core/security.py). Profile data like email belongs
+    # in a "who am I" call so it's never stale relative to the DB and
+    # never bloats every single request's Authorization header.
+    result = await session.execute(select(User).where(User.id == uuid.UUID(user.user_id)))
+    return result.scalar_one()

@@ -1,0 +1,13 @@
+@import "tailwindcss";
+
+@theme {
+  /* Mission-control palette: cool slate ground, amber for the one thing
+     that needs attention (errors, destructive actions, the active nav
+     item) -- not a decorative accent used everywhere. */
+  --color-ink: #0f172a;
+  --color-amber: #d97706;
+}
+
+body {
+  @apply bg-slate-50 text-slate-900 antialiased;
+}
