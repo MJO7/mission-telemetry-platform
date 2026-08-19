@@ -1,0 +1,29 @@
+# Phase 1: just Postgres. Redis/Kafka/MinIO get added here in Phases
+# 3-4 and 6 -- not now, because nothing in Phase 1 talks to them, and a
+# service in this file that no running code uses is exactly the kind of
+# unjustified complexity the spec says to flag.
+services:
+  postgres:
+    # timescale/timescaledb-ha ships the Timescale extension pre-built
+    # on top of postgres:16 -- so Phase 5 hypertables need `CREATE
+    # EXTENSION timescaledb;` and nothing else, no separate service.
+    # Using it from Phase 1 (extension unused until Phase 5) avoids a
+    # disruptive image swap + data migration later.
+    image: timescale/timescaledb-ha:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: telemetry
+      POSTGRES_PASSWORD: telemetry
+      POSTGRES_DB: telemetry
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/home/postgres/pgdata/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U telemetry -d telemetry"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pg_data:
