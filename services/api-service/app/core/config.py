@@ -43,6 +43,13 @@ class Settings(BaseSettings):
     kafka_brokers: list[str] = ["localhost:9092"]
     redis_url: str = "redis://localhost:6379/0"
 
+    # Phase 4: bounded outbound queue per WebSocket connection. A slow
+    # browser tab (backgrounded, throttled, or just a bad connection)
+    # must not turn into unbounded server-side memory growth -- past
+    # this depth, new messages are dropped for that one connection (see
+    # app/ws/manager.py) instead of buffered forever.
+    ws_queue_maxsize: int = 100
+
 
 @lru_cache
 def get_settings() -> Settings:

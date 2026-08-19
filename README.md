@@ -4,7 +4,7 @@ A distributed, multi-tenant telemetry platform for tracking rocket flights —
 built incrementally, phase by phase, as a learning project. See
 `docs/adr/` for the reasoning behind each architectural decision.
 
-## Status: Phase 3 complete
+## Status: Phase 4 complete
 
 Phase 1 (`services/api-service`): Postgres schema, Alembic migrations,
 JWT auth with rotating refresh tokens, RBAC (owner/engineer/viewer),
@@ -25,6 +25,16 @@ defense-in-depth, and writes each point to Postgres alongside a
 transactional outbox row (`docs/adr/0008`) that a separate relay task
 publishes to `telemetry.processed`. Both services route failures to a
 shared `telemetry.dlq` topic, replayable via a standalone CLI.
+
+Phase 4 (`services/api-service/app/ws`): live telemetry over WebSocket
+(`GET /ws/flights/{id}`), fanned out correctly across multiple
+api-service replicas via Redis pub/sub (`docs/adr/0009`) — Kafka's
+consumer group hands `telemetry.processed` to exactly one replica,
+which republishes to Redis so every replica's browsers get it,
+regardless of which one did the consuming. Each connection has a
+bounded outbound queue that drops (not buffers) under backpressure. The
+web client (`web/src/ws`) reconnects on drop with full-jitter
+exponential backoff, visible live on the flight detail page.
 
 ## Quickstart
 
@@ -54,3 +64,15 @@ make processor           # consumer + outbox relay (services/processor)
 make processor-test      # pytest
 make replay-dlq          # replay everything currently in telemetry.dlq
 ```
+
+WebSocket fan-out demo (needs the telemetry pipeline above running too
+— it's what actually produces `telemetry.processed` events to fan out):
+```
+make api           # replica 1, :8000 (same command as above)
+make api-replica2  # replica 2, :8010 -- same Postgres/Redis/Kafka
+```
+Open a flight's detail page in the web app (or connect two WebSocket
+clients, one per port, to `/ws/flights/{id}?token=<access_token>`) and
+send a packet through `make ingest` — both replicas' connections
+receive the identical update. `GET /v1/ws/stats` on either port shows
+that replica's local connection count and backpressure drop count.

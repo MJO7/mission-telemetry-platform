@@ -1,4 +1,4 @@
-.PHONY: dev migrate api test web web-install web-test \
+.PHONY: dev migrate api api-replica2 test web web-install web-test \
 	topics ingest processor-install processor processor-test replay-dlq
 
 dev:
@@ -11,6 +11,13 @@ migrate:
 
 api:
 	cd services/api-service && . .venv/bin/activate && uvicorn app.main:app --reload --port 8000
+
+# A second replica of the exact same service, same Postgres/Redis/Kafka --
+# the multi-replica WebSocket fan-out demo (docs/adr/0009) needs two
+# independent processes to prove a message reaches both regardless of
+# which one's Kafka consumer instance actually saw it.
+api-replica2:
+	cd services/api-service && . .venv/bin/activate && uvicorn app.main:app --port 8010
 
 test:
 	cd services/api-service && . .venv/bin/activate && pytest -q

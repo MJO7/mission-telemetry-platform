@@ -13,6 +13,13 @@ dependencies = [
     "argon2-cffi>=23.1",
     "pyjwt>=2.9",
     "python-multipart>=0.0.9",
+    # Phase 4: WebSocket fan-out. redis for pub/sub between replicas,
+    # aiokafka to bridge telemetry.processed into it, cramjam because
+    # aiokafka's lz4 codec needs it (Redpanda's own internal record
+    # batches use lz4 -- see services/processor for the same dependency).
+    "redis>=5.0",
+    "aiokafka>=0.11",
+    "cramjam>=2.8",
 ]
 
 [project.optional-dependencies]
@@ -45,6 +52,12 @@ ignore = ["B008"]
 [tool.mypy]
 python_version = "3.12"
 strict = true
+
+# aiokafka ships no inline type markers (same gap noted in
+# services/processor's pyproject.toml, which has the identical override).
+[[tool.mypy.overrides]]
+module = "aiokafka.*"
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
