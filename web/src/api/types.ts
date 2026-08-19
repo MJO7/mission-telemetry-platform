@@ -18,3 +18,6 @@ export type TokenResponse = components["schemas"]["TokenResponse"];
 export type LoginRequest = components["schemas"]["LoginRequest"];
 export type RegisterOrgRequest = components["schemas"]["RegisterOrgRequest"];
 export type CurrentUser = components["schemas"]["UserOut"];
+export type TelemetryPoint = components["schemas"]["TelemetryPointOut"];
+export type TelemetryPage = components["schemas"]["TelemetryPageOut"];
+export type TelemetrySummaryBucket = components["schemas"]["TelemetrySummaryBucketOut"];

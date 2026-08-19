@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import get_settings
-from app.routers import auth, flights, telemetry_ws, vehicles
+from app.routers import auth, flights, telemetry, telemetry_ws, vehicles
 from app.ws.fanout import RedisFanout
 from app.ws.kafka_bridge import KafkaToRedisBridge, run_forever
 from app.ws.manager import ConnectionManager
@@ -63,6 +63,7 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(vehicles.router)
 app.include_router(flights.router)
+app.include_router(telemetry.router)
 app.include_router(telemetry_ws.router)
 
 

@@ -1,6 +1,7 @@
 import { Link, useParams } from "react-router-dom";
 import { useFlight } from "../queries/flights";
 import { useVehicle } from "../queries/vehicles";
+import { useTelemetryHistory, useTelemetrySummary } from "../queries/telemetry";
 import { ErrorMessage, Loading } from "../components/StatusMessage";
 import { useFlightStream, type StreamStatus } from "../ws/useFlightStream";
 
@@ -41,9 +42,11 @@ export function FlightDetailPage() {
         </div>
       </dl>
       <LiveTelemetryPanel key={flight.id} flightId={flight.id} />
+      <TelemetryHistoryPanel key={`${flight.id}-history`} flightId={flight.id} />
       <p className="text-xs text-slate-400">
-        This panel shows telemetry as it arrives, not history -- a scrollable log of everything
-        this flight has recorded lands once Phase 5's storage/query work is in.
+        History loads a page at a time (keyset-paginated, not offset -- see docs/adr/0011) so it
+        stays fast no matter how long this flight ran. It isn't virtualized yet, so a very long
+        flight's list will still get long in the DOM -- that's a real, known gap, not solved here.
       </p>
     </div>
   );
@@ -80,6 +83,97 @@ function LiveTelemetryPanel({ flightId }: { flightId: string }) {
       ) : (
         <p className="mt-3 text-sm text-slate-400">Waiting for the first telemetry point…</p>
       )}
+    </div>
+  );
+}
+
+function TelemetryHistoryPanel({ flightId }: { flightId: string }) {
+  const summary = useTelemetrySummary(flightId);
+  const history = useTelemetryHistory(flightId);
+  const points = history.data?.pages.flatMap((page) => page.points) ?? [];
+
+  return (
+    <div className="space-y-4 rounded-lg border border-slate-200 bg-white p-4">
+      <h2 className="text-sm font-semibold text-slate-900">History</h2>
+
+      <div>
+        <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+          Per-minute summary
+        </h3>
+        {summary.isLoading && <p className="text-sm text-slate-400">Loading…</p>}
+        {summary.data && summary.data.length === 0 && (
+          <p className="text-sm text-slate-400">
+            Nothing yet -- the summary refreshes on a 1-minute schedule (docs/adr/0010).
+          </p>
+        )}
+        {summary.data && summary.data.length > 0 && (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-xs uppercase tracking-wide text-slate-400">
+                  <th className="pb-1 pr-4">Minute</th>
+                  <th className="pb-1 pr-4">Avg alt</th>
+                  <th className="pb-1 pr-4">Max alt</th>
+                  <th className="pb-1 pr-4">Max accel</th>
+                  <th className="pb-1">Samples</th>
+                </tr>
+              </thead>
+              <tbody>
+                {summary.data.map((bucket) => (
+                  <tr key={bucket.bucket} className="border-t border-slate-100">
+                    <td className="py-1 pr-4 text-slate-900">
+                      {new Date(bucket.bucket).toLocaleTimeString()}
+                    </td>
+                    <td className="py-1 pr-4 text-slate-900">
+                      {bucket.avg_alt_ft?.toFixed(0) ?? "—"} ft
+                    </td>
+                    <td className="py-1 pr-4 text-slate-900">
+                      {bucket.max_alt_ft?.toFixed(0) ?? "—"} ft
+                    </td>
+                    <td className="py-1 pr-4 text-slate-900">
+                      {bucket.max_accel_g?.toFixed(1) ?? "—"} g
+                    </td>
+                    <td className="py-1 text-slate-500">{bucket.sample_count}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div>
+        <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+          Raw points
+        </h3>
+        {history.isLoading && <p className="text-sm text-slate-400">Loading…</p>}
+        {points.length === 0 && !history.isLoading && (
+          <p className="text-sm text-slate-400">No points recorded yet.</p>
+        )}
+        {points.length > 0 && (
+          <ul className="divide-y divide-slate-100 text-sm">
+            {points.map((point) => (
+              <li key={`${point.seq_no}-${point.ts}`} className="flex justify-between py-1">
+                <span className="text-slate-500">
+                  #{point.seq_no} · {point.phase}
+                </span>
+                <span className="text-slate-900">{point.alt_ft.toFixed(0)} ft</span>
+                <span className="text-slate-400">{new Date(point.ts).toLocaleTimeString()}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+        {history.hasNextPage && (
+          <button
+            type="button"
+            onClick={() => void history.fetchNextPage()}
+            disabled={history.isFetchingNextPage}
+            className="mt-2 text-sm text-amber-700 hover:underline disabled:opacity-50"
+          >
+            {history.isFetchingNextPage ? "Loading…" : "Load more"}
+          </button>
+        )}
+      </div>
     </div>
   );
 }

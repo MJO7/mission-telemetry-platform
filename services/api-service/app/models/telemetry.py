@@ -2,15 +2,24 @@
 Vehicle / Flight / TelemetryPoint.
 
 TelemetryPoint carries org_id directly (see base.py docstring rationale).
-In Phase 5 this table becomes a Timescale hypertable and (ts, flight_id)
-absorbs a composite index; for now it's a plain Postgres table so Phase 1
-doesn't require the Timescale extension to be installed to run.
+Phase 5 turns it into a TimescaleDB hypertable, partitioned on `ts` --
+see the class docstring below and docs/adr/0010 for what that changes
+about its PK/index shape and why.
 """
 import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, Float, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import (
+    DateTime,
+    Enum,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -67,24 +76,38 @@ class TelemetryPoint(Base, UUIDPk):
     what every query and index cares about) on a table that will hold
     10M+ rows. Two unused timestamp columns times 10M rows is real bytes.
 
-    uq_telemetry_flight_seq: idempotency defense-in-depth. Phase 3's
-    processor already dedupes via Redis SETNX before ever reaching this
-    insert (fast path, avoids a wasted DB round trip for the common
-    case) -- this constraint is what happens if that fast path is ever
-    wrong: Redis data loss/eviction, a bug, a second processor replica
-    racing the same message. Belt-and-suspenders on purpose: a dedup
-    story that only lives in a cache is one Redis restart away from
-    silently not being a dedup story at all.
+    Phase 5: this is a TimescaleDB hypertable, chunked on `ts` (see the
+    migration and docs/adr/0010). That reshapes two things a plain
+    Postgres table wouldn't need:
+
+    - The PK is composite, `(id, ts)`, not just `id` -- Timescale
+      requires the partitioning column in every unique/PK constraint, so
+      a hypertable can enforce global uniqueness within each time chunk
+      without a cross-chunk index. This PK exists for that correctness
+      requirement, not for query performance: nothing looks up a
+      TelemetryPoint by raw `id`. The index that actually serves real
+      queries is `ix_telemetry_points_flight_ts` below.
+    - uq_telemetry_flight_seq now includes `ts` for the same reason.
+      This is a small, honest relaxation of the idempotency guarantee
+      (two rows could theoretically share a (flight_id, seq_no) at
+      different `ts` without tripping it) -- acceptable because seq_no
+      and ts are always set together from the same source packet in
+      practice, and Redis SETNX (Phase 3) is still the primary dedup
+      path; this constraint is defense-in-depth for when that fails,
+      same as before.
     """
     __tablename__ = "telemetry_points"
-    __table_args__ = (UniqueConstraint("flight_id", "seq_no", name="uq_telemetry_flight_seq"),)
+    __table_args__ = (
+        UniqueConstraint("flight_id", "seq_no", "ts", name="uq_telemetry_flight_seq"),
+        Index("ix_telemetry_points_flight_ts", "flight_id", "ts"),
+    )
 
     org_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
     flight_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("flights.id", ondelete="CASCADE"), index=True
+        UUID(as_uuid=True), ForeignKey("flights.id", ondelete="CASCADE")
     )
     seq_no: Mapped[int] = mapped_column(Integer)
-    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
     phase: Mapped[FlightPhase] = mapped_column(Enum(FlightPhase, name="flight_phase"))
 
     alt_ft: Mapped[float] = mapped_column(Float)

@@ -160,6 +160,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/flights/{flight_id}/telemetry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Telemetry */
+        get: operations["list_telemetry_v1_flights__flight_id__telemetry_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/flights/{flight_id}/telemetry/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Telemetry Summary */
+        get: operations["telemetry_summary_v1_flights__flight_id__telemetry_summary_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/healthz": {
         parameters: {
             query?: never;
@@ -175,6 +209,30 @@ export interface paths {
          *     once Redis/Kafka exist to check).
          */
         get: operations["healthz_healthz_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/ws/stats": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ws Stats
+         * @description This replica's local WebSocket fan-out state -- how many flights
+         *     it's watching, how many browsers are attached, how many messages
+         *     it's had to drop under backpressure. Per-replica on purpose (not
+         *     cluster-wide): each replica only knows about its own connections,
+         *     which is itself the point being demonstrated (see docs/adr/0009).
+         */
+        get: operations["ws_stats_v1_ws_stats_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -258,6 +316,73 @@ export interface components {
          * @enum {string}
          */
         Role: "owner" | "engineer" | "viewer";
+        /** TelemetryPageOut */
+        TelemetryPageOut: {
+            /** Points */
+            points: components["schemas"]["TelemetryPointOut"][];
+            /** Next Cursor */
+            next_cursor: string | null;
+        };
+        /** TelemetryPointOut */
+        TelemetryPointOut: {
+            /** Seq No */
+            seq_no: number;
+            /**
+             * Ts
+             * Format: date-time
+             */
+            ts: string;
+            /** Phase */
+            phase: string;
+            /** Alt Ft */
+            alt_ft: number;
+            /** Vel Ft S */
+            vel_ft_s: number;
+            /** Accel G */
+            accel_g: number;
+            /** Qw */
+            qw: number;
+            /** Qx */
+            qx: number;
+            /** Qy */
+            qy: number;
+            /** Qz */
+            qz: number;
+            /** Lat */
+            lat: number | null;
+            /** Lon */
+            lon: number | null;
+            /** Temp C */
+            temp_c: number | null;
+            /** Battery V */
+            battery_v: number | null;
+            /** Rssi */
+            rssi: number | null;
+        };
+        /**
+         * TelemetrySummaryBucketOut
+         * @description One row of the telemetry_1m continuous aggregate (see
+         *     docs/adr/0010) -- a per-minute rollup, not a raw sample.
+         */
+        TelemetrySummaryBucketOut: {
+            /**
+             * Bucket
+             * Format: date-time
+             */
+            bucket: string;
+            /** Avg Alt Ft */
+            avg_alt_ft: number | null;
+            /** Max Alt Ft */
+            max_alt_ft: number | null;
+            /** Avg Vel Ft S */
+            avg_vel_ft_s: number | null;
+            /** Max Vel Ft S */
+            max_vel_ft_s: number | null;
+            /** Max Accel G */
+            max_accel_g: number | null;
+            /** Sample Count */
+            sample_count: number;
+        };
         /** TokenResponse */
         TokenResponse: {
             /** Access Token */
@@ -662,6 +787,72 @@ export interface operations {
             };
         };
     };
+    list_telemetry_v1_flights__flight_id__telemetry_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque cursor from a previous page's next_cursor */
+                after?: string | null;
+            };
+            header?: never;
+            path: {
+                flight_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TelemetryPageOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    telemetry_summary_v1_flights__flight_id__telemetry_summary_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                flight_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TelemetrySummaryBucketOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     healthz_healthz_get: {
         parameters: {
             query?: never;
@@ -679,6 +870,28 @@ export interface operations {
                 content: {
                     "application/json": {
                         [key: string]: string;
+                    };
+                };
+            };
+        };
+    };
+    ws_stats_v1_ws_stats_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: number;
                     };
                 };
             };

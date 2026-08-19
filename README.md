@@ -4,7 +4,7 @@ A distributed, multi-tenant telemetry platform for tracking rocket flights —
 built incrementally, phase by phase, as a learning project. See
 `docs/adr/` for the reasoning behind each architectural decision.
 
-## Status: Phase 4 complete
+## Status: Phase 5 complete
 
 Phase 1 (`services/api-service`): Postgres schema, Alembic migrations,
 JWT auth with rotating refresh tokens, RBAC (owner/engineer/viewer),
@@ -35,6 +35,18 @@ regardless of which one did the consuming. Each connection has a
 bounded outbound queue that drops (not buffers) under backpressure. The
 web client (`web/src/ws`) reconnects on drop with full-jitter
 exponential backoff, visible live on the flight detail page.
+
+Phase 5 (`telemetry_points` as a TimescaleDB hypertable): `telemetry_points`
+is now partitioned on `ts` in 1-day chunks (`docs/adr/0010`), with a
+`telemetry_1m` continuous aggregate backing fast per-flight summaries.
+`GET /v1/flights/{id}/telemetry` is keyset-paginated (`docs/adr/0011`)
+rather than `OFFSET`/`LIMIT` — safe under the concurrent writes this
+table is never not under — and `GET /v1/flights/{id}/telemetry/summary`
+reads the continuous aggregate directly. Both are wired into the flight
+detail page. `docs/BENCHMARKS.md` has the real, measured before/after:
+the composite index cuts buffer reads ~42x on paginated queries, and the
+continuous aggregate is ~224x faster than computing the same summary
+live over 500k raw points.
 
 ## Quickstart
 
@@ -76,3 +88,10 @@ clients, one per port, to `/ws/flights/{id}?token=<access_token>`) and
 send a packet through `make ingest` — both replicas' connections
 receive the identical update. `GET /v1/ws/stats` on either port shows
 that replica's local connection count and backpressure drop count.
+
+Query-optimization benchmarks (needs `make dev` + `make migrate`):
+```
+make benchmark-seed   # ~1M rows of realistic synthetic telemetry, ~10-15s
+```
+See `docs/BENCHMARKS.md` for the real `EXPLAIN ANALYZE` output this
+data produces and how to reproduce it yourself.

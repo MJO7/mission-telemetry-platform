@@ -1,5 +1,6 @@
 .PHONY: dev migrate api api-replica2 test web web-install web-test \
-	topics ingest processor-install processor processor-test replay-dlq
+	topics ingest processor-install processor processor-test replay-dlq \
+	benchmark-seed
 
 dev:
 	docker compose up -d
@@ -53,3 +54,10 @@ processor-test:
 
 replay-dlq:
 	cd services/processor && . .venv/bin/activate && python -m processor.replay_dlq
+
+# --- Phase 5: TimescaleDB query optimization ---
+
+# Seeds ~1M rows of realistic (interleaved multi-flight) synthetic
+# telemetry -- see docs/BENCHMARKS.md and scripts/benchmark_seed.sql.
+benchmark-seed:
+	docker compose exec -T postgres psql -U telemetry -d telemetry -f - < scripts/benchmark_seed.sql
