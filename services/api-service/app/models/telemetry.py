@@ -10,7 +10,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, Float, ForeignKey, Integer, String
+from sqlalchemy import DateTime, Enum, Float, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -66,8 +66,18 @@ class TelemetryPoint(Base, UUIDPk):
     be redundant with `ts` (the flight-relative sample time, which is
     what every query and index cares about) on a table that will hold
     10M+ rows. Two unused timestamp columns times 10M rows is real bytes.
+
+    uq_telemetry_flight_seq: idempotency defense-in-depth. Phase 3's
+    processor already dedupes via Redis SETNX before ever reaching this
+    insert (fast path, avoids a wasted DB round trip for the common
+    case) -- this constraint is what happens if that fast path is ever
+    wrong: Redis data loss/eviction, a bug, a second processor replica
+    racing the same message. Belt-and-suspenders on purpose: a dedup
+    story that only lives in a cache is one Redis restart away from
+    silently not being a dedup story at all.
     """
     __tablename__ = "telemetry_points"
+    __table_args__ = (UniqueConstraint("flight_id", "seq_no", name="uq_telemetry_flight_seq"),)
 
     org_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
     flight_id: Mapped[uuid.UUID] = mapped_column(

@@ -10,5 +10,8 @@ __pycache__/
 # Env / secrets
 .env
 
+# Go
+services/ingest-service/ingest-service
+
 # OS
 .DS_Store

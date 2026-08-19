@@ -1,7 +1,7 @@
-# Phase 1: just Postgres. Redis/Kafka/MinIO get added here in Phases
-# 3-4 and 6 -- not now, because nothing in Phase 1 talks to them, and a
-# service in this file that no running code uses is exactly the kind of
-# unjustified complexity the spec says to flag.
+# Phase 1: Postgres. Phase 3 adds Redpanda (Kafka-API-compatible broker)
+# and Redis. MinIO gets added in Phase 6 -- not now, because nothing yet
+# talks to it, and a service in this file that no running code uses is
+# exactly the kind of unjustified complexity the spec says to flag.
 services:
   postgres:
     # timescale/timescaledb-ha ships the Timescale extension pre-built
@@ -25,5 +25,43 @@ services:
       timeout: 5s
       retries: 10
 
+  # Redpanda speaks the real Kafka wire protocol (segmentio/kafka-go and
+  # any other Kafka client work against it unmodified) but ships as one
+  # binary with no ZooKeeper/JVM -- the honest reason to reach for it
+  # instead of Apache Kafka for local dev: identical client-facing
+  # behavior, far lighter to run on a laptop. See docs/adr/0006.
+  redpanda:
+    image: redpandadata/redpanda:v24.2.7
+    restart: unless-stopped
+    command:
+      - redpanda
+      - start
+      - --smp=1
+      - --overprovisioned
+      - --node-id=0
+      - --kafka-addr=PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr=PLAINTEXT://localhost:9092
+    ports:
+      - "9092:9092"
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
 volumes:
   pg_data:
+  redpanda_data:

@@ -34,6 +34,15 @@ class Settings(BaseSettings):
     # origin gets added here via API_CORS_ORIGINS, not by loosening this.
     cors_origins: list[str] = ["http://localhost:5173"]
 
+    # Phase 3: shared here (not duplicated in a separate processor-only
+    # settings module) because api-service, processor, and Phase 4's WS
+    # gateway all eventually need the same broker/cache addresses -- one
+    # place to point everything at a different Kafka/Redis is worth more
+    # than the small saving of not importing api-service's config module
+    # from processor.
+    kafka_brokers: list[str] = ["localhost:9092"]
+    redis_url: str = "redis://localhost:6379/0"
+
 
 @lru_cache
 def get_settings() -> Settings:
