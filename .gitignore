@@ -11,10 +11,11 @@ __pycache__/
 .env
 k8s/base/secret.yaml
 k8s/kubeconfig*
-ansible/multipass_key
-ansible/multipass_key.pub
-ansible/*.retry
-ansible/fetched-kubeconfig.yaml
+deploy/ansible/mtp_key
+deploy/ansible/mtp_key.pub
+deploy/ansible/kubeconfig
+deploy/ansible/kubeconfig.raw
+deploy/ansible/*.retry
 
 # Go
 services/ingest-service/ingest-service

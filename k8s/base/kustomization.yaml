@@ -1,3 +1,13 @@
+# Explicit list, not a bare-directory scan -- kustomize only processes
+# what's named here, so 02-secret.example.yaml (a template with
+# CHANGE_ME placeholders, never meant to be applied literally) and any
+# real generated secret.yaml sitting alongside these files are safely
+# ignored rather than accidentally deployed. This is also exactly what
+# lets deploy/ansible's app role apply this same directory with
+# `kubectl apply -k` (Kustomize mode) instead of a flat, non-recursive
+# `-f` sweep -- `-f` has no concept of a resources list and would try
+# to apply every .yaml file it finds, including this one, and fail
+# outright (kubectl has no API for `kind: Kustomization`).
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
@@ -8,7 +18,3 @@ resources:
   - 30-ingest-service.yaml
   - 40-web.yaml
   - 50-processor.yaml
-# secret.yaml deliberately not listed here -- it's gitignored (real
-# values, generated locally or by CI, never committed; see
-# 02-secret.example.yaml) and applied as its own step wherever this
-# base is used.

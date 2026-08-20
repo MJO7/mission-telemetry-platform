@@ -1,0 +1,226 @@
+# --- Additions beyond the literal spec, flagged --------------------
+# The given role only ever applies manifests and waits for 4
+# Deployments' rollouts. That can't actually succeed as written:
+# ingest-service's readinessProbe dials real Kafka (see
+# services/ingest-service/handlers.go's handleReadyz) and processor
+# needs real Postgres+Kafka to do anything -- neither exists yet on a
+# bare k3s node. Without provisioning Redpanda/Redis first, the
+# "Wait for rollouts to complete" task below would time out for real,
+# not hypothetically. Idempotency policy for everything added here
+# matches the given spec's own idiom exactly: check first (register +
+# failed_when: false), act only `when` the check says it's needed.
+
+- name: Add Helm repos (control machine)
+  delegate_to: localhost
+  become: false
+  ansible.builtin.command: "{{ item }}"
+  loop:
+    - helm repo add redpanda https://charts.redpanda.com
+    - helm repo add bitnami https://charts.bitnami.com/bitnami
+  register: repo_add
+  failed_when: repo_add.rc != 0 and 'already exists' not in repo_add.stderr
+  changed_when: "'has been added' in repo_add.stdout"
+
+- name: Update Helm repo cache (control machine)
+  delegate_to: localhost
+  become: false
+  ansible.builtin.command: helm repo update
+  changed_when: false
+
+- name: Check whether Redpanda is already installed
+  delegate_to: localhost
+  become: false
+  environment:
+    KUBECONFIG: "{{ playbook_dir }}/kubeconfig"
+  ansible.builtin.command: helm status redpanda -n {{ app_namespace }}
+  register: redpanda_status
+  failed_when: false
+  changed_when: false
+
+- name: Install Redpanda (idempotent -- only when missing)
+  delegate_to: localhost
+  become: false
+  environment:
+    KUBECONFIG: "{{ playbook_dir }}/kubeconfig"
+  ansible.builtin.command: >
+    helm install redpanda redpanda/redpanda -n {{ app_namespace }} --create-namespace
+    -f {{ manifest_dir }}/helm-values/redpanda-values.yaml --wait --timeout 5m
+  when: redpanda_status.rc != 0
+  changed_when: redpanda_status.rc != 0
+
+- name: Check whether Redis is already installed
+  delegate_to: localhost
+  become: false
+  environment:
+    KUBECONFIG: "{{ playbook_dir }}/kubeconfig"
+  ansible.builtin.command: helm status redis -n {{ app_namespace }}
+  register: redis_status
+  failed_when: false
+  changed_when: false
+
+- name: Install Redis (idempotent -- only when missing)
+  delegate_to: localhost
+  become: false
+  environment:
+    KUBECONFIG: "{{ playbook_dir }}/kubeconfig"
+  ansible.builtin.command: >
+    helm install redis bitnami/redis -n {{ app_namespace }} --create-namespace
+    -f {{ manifest_dir }}/helm-values/redis-values.yaml --wait --timeout 5m
+  when: redis_status.rc != 0
+  changed_when: redis_status.rc != 0
+
+# The manifest apply below creates the namespace too (00-namespace.yaml
+# is part of the kustomization), but that's the LAST step in this role
+# and the secret has to exist before api-service/processor's pods can
+# even start -- Helm's --create-namespace above already guarantees the
+# namespace exists by this point regardless, so this is just making
+# that dependency explicit rather than accidental.
+- name: Check whether api-secrets already exists
+  ansible.builtin.command: k3s kubectl get secret api-secrets -n {{ app_namespace }}
+  become: true
+  register: secret_check
+  failed_when: false
+  changed_when: false
+
+- name: Generate and create api-secrets (idempotent -- only when missing)
+  ansible.builtin.shell: |
+    set -eu
+    PG_PASS=$(openssl rand -hex 16)
+    JWT_SECRET=$(openssl rand -hex 32)
+    k3s kubectl create secret generic api-secrets -n {{ app_namespace }} \
+      --from-literal=API_DATABASE_URL="postgresql+asyncpg://telemetry:${PG_PASS}@postgres-0.postgres:5432/telemetry" \
+      --from-literal=API_JWT_SECRET="${JWT_SECRET}" \
+      --from-literal=POSTGRES_PASSWORD="${PG_PASS}"
+  become: true
+  when: secret_check.rc != 0
+  changed_when: secret_check.rc != 0
+
+# The given spec never gets these 4 images onto the node at all --
+# confirmed live: every app pod sat in ImagePullBackOff and all 4
+# "Wait for rollouts" items ran out their full 180s each (Postgres,
+# Redis, and Redpanda all pulled fine -- they're real images from real
+# registries; only these locally-built, registry-less ones can't be
+# pulled by anything). This assumes `docker build` already happened on
+# the control machine for all 4 (see k8s/README.md's quickstart) --
+# building application code is out of scope for infrastructure
+# provisioning; getting already-built artifacts onto the node is not.
+- name: Check whether app images already exist on the node
+  ansible.builtin.shell: "k3s ctr images ls -q | grep -q '{{ item }}'"
+  loop:
+    - mission-telemetry/api-service:local
+    - mission-telemetry/ingest-service:local
+    - mission-telemetry/web:local
+    - mission-telemetry/processor:local
+  become: true
+  register: image_check
+  failed_when: false
+  changed_when: false
+
+- name: Save app images to a tarball (control machine)
+  delegate_to: localhost
+  become: false
+  ansible.builtin.command: >
+    docker save
+    mission-telemetry/api-service:local
+    mission-telemetry/ingest-service:local
+    mission-telemetry/web:local
+    mission-telemetry/processor:local
+    -o /tmp/mtp-images.tar
+  when: image_check.results | selectattr('rc', 'ne', 0) | list | length > 0
+  changed_when: true
+
+- name: Copy image tarball to node
+  ansible.posix.synchronize:
+    src: /tmp/mtp-images.tar
+    dest: /tmp/mtp-images.tar
+  become: true
+  when: image_check.results | selectattr('rc', 'ne', 0) | list | length > 0
+
+- name: Import images into the node's containerd
+  ansible.builtin.command: k3s ctr images import /tmp/mtp-images.tar
+  become: true
+  when: image_check.results | selectattr('rc', 'ne', 0) | list | length > 0
+  changed_when: true
+
+# --- Given spec, verbatim except one line ---------------------------
+
+# rsync will not create a destination whose *parent* doesn't exist yet
+# (verified: "mkdir /opt/mtp/k8s failed: No such file or directory" on
+# a genuinely bare node with no /opt/mtp) -- synchronize's own `dest`
+# only ever creates the final path component, not the whole tree above
+# it. The given spec assumed /opt/mtp already existed; on an actually
+# bare node it doesn't.
+- name: Ensure /opt/mtp exists
+  ansible.builtin.file:
+    path: /opt/mtp
+    state: directory
+    mode: "0755"
+  become: true
+
+- name: Copy manifests to node
+  ansible.posix.synchronize:
+    src: "{{ manifest_dir }}/"
+    dest: /opt/mtp/k8s/
+    delete: true
+  become: true
+
+# `-k .../base`, not `-f .../` as originally specified: `-f` on a
+# directory is a flat, non-recursive file sweep with no concept of a
+# resources list, so it would also try to apply k8s/base/kustomization.yaml
+# itself as a raw resource and fail outright (verified: `no matches for
+# kind "Kustomization"`). `-k` is Kustomize mode -- it reads that same
+# kustomization.yaml as the control file it actually is, applying
+# exactly the 7 manifests it lists and nothing else (any template or
+# stray file sitting in that directory but not named in `resources:` is
+# correctly ignored, not swept).
+#
+# changed_when here is NOT based on `apply`'s own stdout ("configured"/
+# "unchanged" per resource), unlike the given spec's original idiom --
+# verified live that it produces false positives: `deployment.apps/
+# api-service` and `statefulset.apps/postgres` report "configured" on
+# *every single run* forever, even back-to-back with nothing else
+# touching the cluster, while `kubectl diff` on the same apply reports
+# zero difference. Root cause: kubectl apply's client-side three-way
+# merge treats "1000m" (this file's cpu limit) and "1" (how the API
+# server normalizes and stores that same quantity) as different
+# strings when computing its patch, even though they're the same
+# value -- a real, documented kubectl quirk, not a mistake in this
+# manifest. `kubectl diff`'s exit code (0 = no difference, 1 = real
+# difference) doesn't share that false-positive, so it's what
+# changed_when is keyed on instead.
+- name: Check whether the manifests would actually change anything
+  ansible.builtin.command: k3s kubectl diff -k /opt/mtp/k8s/base -n {{ app_namespace }}
+  become: true
+  register: diff_check
+  failed_when: diff_check.rc not in [0, 1] # 0 = no diff, 1 = real diff, anything else = a genuine error
+  changed_when: false
+
+- name: Apply manifests
+  ansible.builtin.command: k3s kubectl apply -k /opt/mtp/k8s/base -n {{ app_namespace }}
+  become: true
+  register: apply_out
+  changed_when: diff_check.rc == 1
+
+# --- Addition: the topics nothing above creates ---------------------
+- name: Create Kafka topics (idempotent)
+  ansible.builtin.command: >
+    k3s kubectl exec -n {{ app_namespace }} redpanda-0 -c redpanda --
+    rpk topic create {{ item.name }} --partitions {{ item.partitions }}
+  become: true
+  loop:
+    - { name: telemetry.raw, partitions: 3 }
+    - { name: telemetry.processed, partitions: 3 }
+    - { name: telemetry.dlq, partitions: 1 }
+  register: topic_out
+  failed_when: false
+  changed_when: "'OK' in topic_out.stdout"
+
+# --- Given spec, verbatim ---------------------------------------------
+
+- name: Wait for rollouts to complete
+  ansible.builtin.command: >
+    k3s kubectl rollout status deployment/{{ item }}
+    -n {{ app_namespace }} --timeout=180s
+  become: true
+  loop: [api-service, ingest-service, processor, web]
+  changed_when: false

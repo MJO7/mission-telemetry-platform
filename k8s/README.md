@@ -64,23 +64,17 @@ kubectl exec -n mission-telemetry redpanda-0 -c redpanda -- rpk topic create tel
 
 ## Quickstart (real bare-node k3s, via Ansible + Multipass)
 
-```
-multipass launch --name mission-telemetry-node --cpus 2 --memory 4G --disk 15G 22.04
-ssh-keygen -t ed25519 -f ansible/multipass_key -N "" -C "mission-telemetry-ansible"
-multipass exec mission-telemetry-node -- bash -c \
-  "mkdir -p ~/.ssh && echo '$(cat ansible/multipass_key.pub)' >> ~/.ssh/authorized_keys && chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys"
-# update ansible/inventory.ini's ansible_host to `multipass info mission-telemetry-node`'s IPv4
-cd ansible && ansible-playbook playbook.yml
-```
-
-That produces `ansible/fetched-kubeconfig.yaml` (gitignored -- real
-cluster credentials). Use it with
-`KUBECONFIG=ansible/fetched-kubeconfig.yaml kubectl ...`, then follow
-the same Helm/manifest steps as the k3d quickstart above -- same
-manifests, same k3s version underneath, different host. Images get
-onto the node without a registry via
-`docker save ... | multipass transfer - node:/tmp/images.tar` then
-`multipass exec node -- sudo k3s ctr images import /tmp/images.tar`.
+Superseded its own first draft: see
+[`deploy/ansible/README.md`](../deploy/ansible/README.md) for the
+current, role-based, genuinely-idempotent (`changed=0` on a second run,
+proven not asserted) playbook -- it provisions Kafka/Redis, transfers
+the four application images, and applies these exact manifests itself,
+in one `ansible-playbook playbook.yml`. That doc also has the full
+writeup of five real bugs found only by running the original spec
+against an actually-bare node (image transfer was entirely missing,
+Kafka/Redis were never provisioned, a stray `kustomization.yaml` broke
+a flat `kubectl apply -f`, and two separate idempotency bugs in the
+kubeconfig-fetch and manifest-apply steps).
 
 ## Real measurements, not guessed numbers
 

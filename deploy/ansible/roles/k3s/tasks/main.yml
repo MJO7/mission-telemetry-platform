@@ -1,0 +1,64 @@
+- name: Check whether k3s is already installed
+  ansible.builtin.stat:
+    path: /usr/local/bin/k3s
+  register: k3s_binary
+
+- name: Download k3s installer
+  ansible.builtin.get_url:
+    url: https://get.k3s.io
+    dest: /tmp/k3s-install.sh
+    mode: "0755"
+  when: not k3s_binary.stat.exists
+
+- name: Install k3s
+  ansible.builtin.command: /tmp/k3s-install.sh
+  environment:
+    INSTALL_K3S_VERSION: "{{ k3s_version }}"
+    INSTALL_K3S_EXEC: "--write-kubeconfig-mode 644"
+  become: true
+  when: not k3s_binary.stat.exists
+
+- name: Wait for node to report Ready
+  ansible.builtin.command: k3s kubectl wait --for=condition=Ready node --all --timeout=180s
+  become: true
+  changed_when: false
+
+# dest: ./kubeconfig.raw, not ../kubeconfig -- two fixes on the given
+# spec's single fetch+replace-in-place task, both found by actually
+# running this twice, not by inspection:
+#
+# 1. The Usage section reads the result back as $PWD/kubeconfig from
+#    inside deploy/ansible -- only consistent with a `./`-rooted dest
+#    (deploy/ansible/kubeconfig), not `../` (deploy/kubeconfig, one
+#    level too high).
+# 2. Fetching to the SAME path that the next task then rewrites in
+#    place breaks idempotency by construction: fetch's own
+#    changed-detection compares the remote source against whatever's
+#    already at dest, but after run 1, dest holds the *rewritten*
+#    (real-IP) content while the remote source still says 127.0.0.1 --
+#    so fetch correctly sees a real diff and reports changed on every
+#    single run, forever, even when nothing on the cluster actually
+#    changed. Fetching to a separate .raw file, and only ever writing
+#    the rewritten version somewhere fetch never touches, is what lets
+#    both steps actually stabilize to unchanged.
+- name: Fetch kubeconfig to control machine
+  ansible.builtin.fetch:
+    src: /etc/rancher/k3s/k3s.yaml
+    dest: ./kubeconfig.raw
+    flat: true
+  become: true
+
+- name: Write a Mac-usable kubeconfig, with the server address rewritten
+  ansible.builtin.copy:
+    content: "{{ lookup('file', './kubeconfig.raw') | replace('127.0.0.1', ansible_host) }}"
+    dest: ./kubeconfig
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  # --check mode correctly never runs the fetch above (it would be a
+  # real write to the control machine), so on a first-ever --check run
+  # there's no local kubeconfig.raw yet for this task to read -- not a
+  # real failure, just check mode legitimately having nothing to
+  # dry-run here yet. Only swallow that in check mode; a real run still
+  # fails hard on a genuine error.
+  ignore_errors: "{{ ansible_check_mode }}"
