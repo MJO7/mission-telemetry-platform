@@ -26,13 +26,17 @@ type IngestService struct {
 	dlqWriter *kafka.Writer
 	dropped   atomic.Int64
 	received  atomic.Int64
+	// Kept for handleReadyz's own dial -- the writer doesn't expose a
+	// "can you actually reach a broker right now" check of its own.
+	brokers []string
 }
 
 const channelCapacity = 500
 
 func NewIngestService(brokers []string) *IngestService {
 	s := &IngestService{
-		ch: make(chan Packet, channelCapacity),
+		ch:      make(chan Packet, channelCapacity),
+		brokers: brokers,
 		writer: &kafka.Writer{
 			Addr:  kafka.TCP(brokers...),
 			Topic: "telemetry.raw",

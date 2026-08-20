@@ -21,7 +21,26 @@ from app.core.config import get_settings
 
 settings = get_settings()
 
-engine = create_async_engine(settings.database_url, pool_pre_ping=True, echo=False)
+engine = create_async_engine(
+    settings.database_url,
+    pool_pre_ping=True,
+    echo=False,
+    # Explicit, not SQLAlchemy's defaults (pool_size=5, max_overflow=10
+    # -- up to 15 connections per *pod*). That was invisible until a
+    # real k8s HPA load test (k8s/README.md) scaled this Deployment to
+    # 6 replicas under load and Postgres started rejecting new
+    # connections outright (asyncpg.exceptions.TooManyConnectionsError:
+    # "sorry, too many clients already") -- 6 pods x up to 15 each is
+    # up to 90 connections from this service alone, before processor's
+    # own pool or Postgres's reserved superuser slots. Bounding this
+    # per-pod, in terms of "how many replicas could this realistically
+    # scale to" rather than accepting whatever the default happens to
+    # allow, is what makes the total connection count something anyone
+    # can actually reason about against max_connections.
+    pool_size=5,
+    max_overflow=2,
+    pool_timeout=10,
+)
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
 

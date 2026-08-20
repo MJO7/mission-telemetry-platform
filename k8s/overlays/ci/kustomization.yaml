@@ -1,0 +1,32 @@
+# The base manifests (k8s/base) reference locally-built, locally-tagged
+# images (mission-telemetry/*:local) -- correct for the k3d/Multipass
+# workflow, which loads images straight from the local Docker daemon
+# with no registry involved. CI has no local daemon with those images
+# built into whatever cluster it spins up; it has images it just built
+# and pushed to ghcr.io. This overlay is the one thing that differs
+# between "deploy locally" and "deploy in CI": same manifests, images
+# repointed at the registry.
+#
+# newTag below is a real, buildable placeholder, not committed as the
+# actual tag CI deploys -- the workflow runs
+# `kustomize edit set image ...=...:<git sha>` before `kustomize build`,
+# which rewrites this file in the runner's checkout (never pushed back)
+# to the tag it just built and pushed. Keeping a valid placeholder here
+# means `kubectl kustomize .` also works standalone for inspection.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+images:
+  - name: mission-telemetry/api-service
+    newName: ghcr.io/mjo7/mission-telemetry-platform/api-service
+    newTag: latest
+  - name: mission-telemetry/ingest-service
+    newName: ghcr.io/mjo7/mission-telemetry-platform/ingest-service
+    newTag: latest
+  - name: mission-telemetry/web
+    newName: ghcr.io/mjo7/mission-telemetry-platform/web
+    newTag: latest
+  - name: mission-telemetry/processor
+    newName: ghcr.io/mjo7/mission-telemetry-platform/processor
+    newTag: latest

@@ -1,0 +1,1 @@
+error: error from server (NotFound): pods "k6-loadtest-8k9z8" not found in namespace "mission-telemetry"

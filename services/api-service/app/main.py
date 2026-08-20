@@ -2,10 +2,12 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response, status
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
 
 from app.core.config import get_settings
+from app.core.db import engine
 from app.routers import auth, flights, telemetry, telemetry_ws, vehicles
 from app.ws.fanout import RedisFanout
 from app.ws.kafka_bridge import KafkaToRedisBridge, run_forever
@@ -71,9 +73,30 @@ app.include_router(telemetry_ws.router)
 async def healthz() -> dict[str, str]:
     """Liveness only: is the process up? No dependency checks here on
     purpose -- a DB blip shouldn't make an orchestrator kill and restart
-    an otherwise-healthy process. That's what /readyz is for (Phase 3+,
-    once Redis/Kafka exist to check)."""
+    an otherwise-healthy process (that would compound an outage: the
+    DB comes back, but now every pod is also cycling through a restart).
+    That's what /readyz is for."""
     return {"status": "ok"}
+
+
+@app.get("/readyz")
+async def readyz(response: Response) -> dict[str, str]:
+    """Readiness, not liveness: can this replica actually serve traffic
+    right now? Gated on a real round trip to Postgres, not just "is the
+    process alive" -- the distinction a k8s readinessProbe exists for.
+    A replica that can't reach its DB should be pulled out of the
+    Service's endpoint list (no traffic routed to it) without being
+    killed and restarted (liveness's job, and the wrong tool here: the
+    process itself is fine, restarting it fixes nothing about the DB
+    being unreachable).
+    """
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+    except Exception:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        return {"status": "not ready", "reason": "database unreachable"}
+    return {"status": "ready"}
 
 
 @app.get("/v1/ws/stats")

@@ -1,0 +1,86 @@
+---
+# Bare Ubuntu node -> running k3s cluster, in one playbook run. This is
+# the same k3s distro the local k3d dev cluster wraps (k3d is
+# k3s-in-Docker) -- this playbook is what stands up the real thing on
+# an actual machine instead, per the same manifests in k8s/base/ that
+# were already proven against k3d.
+- name: Provision k3s on a bare node
+  hosts: k3s_node
+  become: true
+  vars:
+    # Matches the k3s version k3d's own image already pinned for the
+    # local dev cluster (rancher/k3s:v1.35.5-k3s1) -- same distro,
+    # same version, so "works on k3d" and "works here" are actually
+    # testing the same thing.
+    k3s_version: "v1.35.5+k3s1"
+
+  tasks:
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Ensure curl is present
+      ansible.builtin.apt:
+        name: curl
+        state: present
+
+    - name: Check whether k3s is already installed
+      ansible.builtin.stat:
+        path: /usr/local/bin/k3s
+      register: k3s_binary
+
+    - name: Download the official k3s install script
+      ansible.builtin.get_url:
+        url: https://get.k3s.io
+        dest: /tmp/install-k3s.sh
+        mode: "0755"
+      when: not k3s_binary.stat.exists
+
+    # The official script, not a hand-rolled binary download + systemd
+    # unit: k3s's own installer already handles the systemd service,
+    # the SELinux/AppArmor bits for the target distro, and the exact
+    # flags this version needs -- reimplementing that by hand is
+    # exactly the kind of complexity rule #4 of this whole project says
+    # not to add without a reason. INSTALL_K3S_VERSION pins the version
+    # so a re-run of this playbook is reproducible, not "whatever's
+    # newest today."
+    - name: Run the k3s install script
+      ansible.builtin.command: /tmp/install-k3s.sh
+      environment:
+        INSTALL_K3S_VERSION: "{{ k3s_version }}"
+      when: not k3s_binary.stat.exists
+
+    - name: Wait for the k3s node to report Ready
+      ansible.builtin.command: k3s kubectl get node -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}'
+      register: node_ready
+      until: node_ready.stdout == "True"
+      retries: 30
+      delay: 5
+      changed_when: false
+
+    - name: Read the cluster's kubeconfig
+      ansible.builtin.slurp:
+        src: /etc/rancher/k3s/k3s.yaml
+      register: kubeconfig_raw
+
+    # k3s.yaml points kubectl at 127.0.0.1 by design (correct for
+    # running kubectl ON the node) -- from the Mac side, "127.0.0.1"
+    # means the Mac itself, not this VM, so the server address has to
+    # be rewritten to the node's real address before this file is any
+    # use off-box.
+    - name: Write a Mac-usable kubeconfig, with the server address rewritten
+      delegate_to: localhost
+      become: false
+      ansible.builtin.copy:
+        content: "{{ (kubeconfig_raw.content | b64decode) | replace('127.0.0.1', ansible_host) }}"
+        dest: "{{ playbook_dir }}/fetched-kubeconfig.yaml"
+        mode: "0600"
+
+    - name: Report how to use it
+      delegate_to: localhost
+      become: false
+      ansible.builtin.debug:
+        msg: >-
+          k3s is up. Use it with:
+          KUBECONFIG={{ playbook_dir }}/fetched-kubeconfig.yaml kubectl get nodes

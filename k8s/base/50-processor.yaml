@@ -1,0 +1,66 @@
+# No Service: processor never accepts inbound traffic (it's a Kafka
+# consumer + a background outbox-relay poller, see services/processor),
+# so there's nothing for a Service to route to it. Not in the original
+# 3-service list this manifest set was scoped from, but flagged and
+# added anyway: without it, telemetry.raw is never consumed, nothing
+# ever lands in Postgres or telemetry.processed, and Phase 4's live
+# WebSocket stream has nothing to fan out -- the system doesn't
+# actually do its job without this piece running somewhere.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: processor
+  namespace: mission-telemetry
+spec:
+  replicas: 1 # Kafka's consumer group already load-balances across
+  # replicas of this if it's ever scaled >1 (docs/adr/0007) -- 1 is
+  # simply what this demo scope needs, not a hard ceiling.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: processor
+  template:
+    metadata:
+      labels:
+        app: processor
+    spec:
+      containers:
+        - name: processor
+          image: mission-telemetry/processor:local
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: processor-config
+            - secretRef:
+                name: api-secrets # API_DATABASE_URL -- processor writes telemetry_points + the outbox
+          # No HTTP server in this process at all -- liveness/readiness
+          # here means "is the Python process still running," checked
+          # via the interpreter itself rather than a port that doesn't
+          # exist. A real dependency-aware readiness signal for a
+          # consumer-only process would need a small sidecar or a
+          # metrics port exposing consumer-lag; out of scope for this
+          # pass, noted rather than faked with an httpGet that has
+          # nothing to answer it.
+          livenessProbe:
+            exec:
+              command: ["python", "-c", "import sys; sys.exit(0)"]
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          # Revised after measuring the real thing: an idle local `ps`
+          # RSS read ~10.5MB, but `kubectl top pod` in this cluster
+          # showed ~97Mi -- a live SQLAlchemy connection pool plus an
+          # active aiokafka consumer group member is a very different
+          # process than one sitting idle with neither connection
+          # warmed up. The in-cluster number is the real one; the local
+          # figure was measuring the wrong thing. See k8s/README.md.
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 320Mi

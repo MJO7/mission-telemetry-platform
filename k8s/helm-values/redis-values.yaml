@@ -1,0 +1,25 @@
+# Bitnami's redis chart. Standalone (no Sentinel/replicas) -- this
+# project's own use of Redis (Phase 3 dedup, Phase 4 pub/sub fan-out)
+# has never needed HA Redis; matching that here rather than adding
+# complexity the app was never built to depend on.
+architecture: standalone
+
+auth:
+  enabled: false # local demo cluster, internal-only -- see redpanda-values.yaml's tls note for the same call
+
+master:
+  persistence:
+    enabled: true
+    size: 512Mi
+  # Measured baseline (docker stats, idle local Redis container): ~10MiB.
+  # See k8s/README.md.
+  resources:
+    requests:
+      cpu: 50m
+      memory: 32Mi
+    limits:
+      cpu: 250m
+      memory: 128Mi
+
+replica:
+  replicaCount: 0

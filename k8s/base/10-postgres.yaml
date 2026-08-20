@@ -1,0 +1,102 @@
+# Same image as local dev (docker-compose.yml) -- timescale/timescaledb-ha
+# already ships the extension Phase 5's hypertable/continuous aggregate
+# need, so there's no separate "install Timescale" step here that could
+# drift from what's actually been tested against.
+#
+# StatefulSet, not Deployment: Postgres needs a stable identity
+# (postgres-0 is always postgres-0, even across a restart) and its own
+# durable volume that survives the pod being rescheduled -- neither of
+# those is a Deployment's contract. One replica: this project's Postgres
+# isn't set up for streaming replication/multi-writer, so a second
+# replica would just be a second independent database, not high
+# availability -- not pretending otherwise here.
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: mission-telemetry
+spec:
+  clusterIP: None # headless -- gives postgres-0 a stable DNS name, required by StatefulSet
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      name: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: mission-telemetry
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: timescale/timescaledb-ha:pg16
+          # Default max_connections (100) plus this app's connection
+          # math (see app/core/db.py's pool_size/max_overflow comment)
+          # is genuinely tight at HPA's maxReplicas=6 -- raised with
+          # real headroom rather than tuned to the exact number that
+          # happened to survive one load test.
+          args: ["-c", "max_connections=300"]
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: "telemetry"
+            - name: POSTGRES_DB
+              value: "telemetry"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: POSTGRES_PASSWORD
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          # Real dependency check, not "is the process alive": pg_isready
+          # actually asks Postgres if it's accepting connections.
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "telemetry", "-d", "telemetry"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "telemetry", "-d", "telemetry"]
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            timeoutSeconds: 5
+          # Local docker idle baseline was ~80MiB; `kubectl top pod` on
+          # this actual StatefulSet (serving real migration + app
+          # traffic, not sitting empty) showed ~126Mi -- close to the
+          # 128Mi request, too close for comfort, so the request moved
+          # up rather than leaving it to round down against reality on
+          # a busier day. See k8s/README.md.
+          resources:
+            requests:
+              cpu: 100m
+              memory: 192Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi

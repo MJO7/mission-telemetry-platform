@@ -23,6 +23,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", svc.handleHealthz)
+	mux.HandleFunc("/readyz", svc.handleReadyz)
 	mux.HandleFunc("/stats", svc.handleStats)
 	mux.HandleFunc("/v1/ingest", svc.handleIngest)
 

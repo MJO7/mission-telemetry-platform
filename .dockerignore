@@ -1,0 +1,14 @@
+# Used by services/processor/Dockerfile, whose build context is the
+# repo root (see that file for why). Everything else's Dockerfile has
+# its own service-local .dockerignore.
+.git
+k8s
+docs
+scripts
+web
+services/*/.venv
+services/*/__pycache__
+services/*/.pytest_cache
+services/*/.mypy_cache
+services/*/.ruff_cache
+**/*.pyc

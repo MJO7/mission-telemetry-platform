@@ -1,0 +1,251 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel a superseded run on the same branch rather than let two runs
+# race to push the same image tag.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------
+  # The 69 tests across all four services (see resume-edit-parked
+  # memory / the "what tests have we done" conversation for the exact
+  # breakdown) -- this is the step that turns "I tested this" into
+  # "this can't regress," which is the entire point of wiring CI at
+  # all. Runs on every push and PR; nothing below this depends on
+  # anything but this passing first.
+  # ---------------------------------------------------------------
+  test-api-service:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/api-service
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv venv .venv && . .venv/bin/activate && uv pip install -e ".[dev]"
+      - run: . .venv/bin/activate && ruff check .
+      - run: . .venv/bin/activate && mypy app
+      - run: . .venv/bin/activate && pytest -q
+
+  test-processor:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/processor
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv venv .venv && . .venv/bin/activate && uv pip install -e ".[dev]" && uv pip install -e ../api-service
+      - run: . .venv/bin/activate && ruff check .
+      - run: . .venv/bin/activate && mypy processor
+      - run: . .venv/bin/activate && pytest -q
+
+  test-ingest-service:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/ingest-service
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: services/ingest-service/go.mod
+      - run: go vet ./...
+      - run: gofmt -l . | tee /tmp/gofmt.out && test ! -s /tmp/gofmt.out
+      - run: go test ./...
+
+  test-web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --legacy-peer-deps
+      - run: npx tsc -b
+      - run: npx oxlint
+      - run: npx vitest run
+
+  # ---------------------------------------------------------------
+  # Build + push all 4 images to GHCR, tagged with the commit SHA
+  # (reproducible, traceable to an exact commit) and `latest` on main.
+  # Only runs after every test job above has passed, and only on
+  # pushes to main -- a PR gets tested, not published.
+  # ---------------------------------------------------------------
+  build-and-push:
+    needs: [test-api-service, test-processor, test-ingest-service, test-web]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: tag
+        run: echo "tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build + push api-service
+        uses: docker/build-push-action@v6
+        with:
+          context: services/api-service
+          push: true
+          tags: |
+            ghcr.io/mjo7/mission-telemetry-platform/api-service:${{ steps.tag.outputs.tag }}
+            ghcr.io/mjo7/mission-telemetry-platform/api-service:latest
+
+      - name: Build + push ingest-service
+        uses: docker/build-push-action@v6
+        with:
+          context: services/ingest-service
+          push: true
+          tags: |
+            ghcr.io/mjo7/mission-telemetry-platform/ingest-service:${{ steps.tag.outputs.tag }}
+            ghcr.io/mjo7/mission-telemetry-platform/ingest-service:latest
+
+      # Build context is the repo root -- see services/processor/Dockerfile's
+      # own comment for why (it install-depends on api-service's app.* package).
+      - name: Build + push processor
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: services/processor/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/mjo7/mission-telemetry-platform/processor:${{ steps.tag.outputs.tag }}
+            ghcr.io/mjo7/mission-telemetry-platform/processor:latest
+
+      - name: Build + push web
+        uses: docker/build-push-action@v6
+        with:
+          context: web
+          push: true
+          build-args: |
+            VITE_API_BASE_URL=http://api-service:8000
+          tags: |
+            ghcr.io/mjo7/mission-telemetry-platform/web:${{ steps.tag.outputs.tag }}
+            ghcr.io/mjo7/mission-telemetry-platform/web:latest
+
+  # ---------------------------------------------------------------
+  # "Applies manifests" -- deliberately against an ephemeral kind
+  # cluster this job creates and destroys itself, NOT the real
+  # Multipass/k3s box the Ansible playbook provisions (k8s-build-progress
+  # memory has the full reasoning): a GitHub-hosted runner has no
+  # network path to a machine sitting behind someone's home router, and
+  # even if it did, handing a CI runner standing credentials to a
+  # personal always-on box is a real security tradeoff a portfolio
+  # project doesn't need to take on. What this job actually proves is
+  # narrower and still real: the images just pushed are pullable, and
+  # the manifests + Helm charts bring up a fully working copy of the
+  # whole system from nothing on a fresh cluster -- the same thing
+  # `make dev && kubectl apply -f k8s/base` proves locally, just
+  # unattended and on every push to main.
+  # ---------------------------------------------------------------
+  validate-deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: ci-validate
+
+      # sed, not the standalone `kustomize` CLI's `edit set image` --
+      # that binary isn't preinstalled on the runner and isn't worth
+      # adding just for this one substitution. `kubectl kustomize`
+      # (built into kubectl, already present) is what actually renders
+      # the manifests later; this step only needs to rewrite plain YAML
+      # text before that happens.
+      - name: Point the CI overlay at the images just pushed
+        run: |
+          sed -i "s/newTag: latest/newTag: ${{ needs.build-and-push.outputs.tag }}/" \
+            k8s/overlays/ci/kustomization.yaml
+          kubectl kustomize k8s/overlays/ci | grep 'image:' # fail fast if the substitution didn't take
+
+      - name: Install Helm repos
+        run: |
+          helm repo add redpanda https://charts.redpanda.com
+          helm repo add bitnami https://charts.bitnami.com/bitnami
+          helm repo update
+
+      - run: kubectl apply -f k8s/base/00-namespace.yaml
+
+      - name: Throwaway secret for this ephemeral cluster only
+        run: |
+          kubectl create secret generic api-secrets -n mission-telemetry \
+            --from-literal=API_DATABASE_URL="postgresql+asyncpg://telemetry:ci-only-password@postgres-0.postgres:5432/telemetry" \
+            --from-literal=API_JWT_SECRET="$(openssl rand -hex 32)" \
+            --from-literal=POSTGRES_PASSWORD="ci-only-password"
+
+      - name: Install Kafka + Redis
+        run: |
+          helm install redpanda redpanda/redpanda -n mission-telemetry -f k8s/helm-values/redpanda-values.yaml --wait --timeout 5m
+          helm install redis bitnami/redis -n mission-telemetry -f k8s/helm-values/redis-values.yaml --wait --timeout 5m
+
+      - name: Apply app manifests (CI overlay -- images from this run)
+        run: kubectl apply -k k8s/overlays/ci
+
+      - name: Wait for every Deployment/StatefulSet to actually roll out
+        run: |
+          kubectl rollout status statefulset/postgres -n mission-telemetry --timeout=180s
+          kubectl rollout status deployment/api-service -n mission-telemetry --timeout=180s
+          kubectl rollout status deployment/ingest-service -n mission-telemetry --timeout=180s
+          kubectl rollout status deployment/web -n mission-telemetry --timeout=180s
+          kubectl rollout status deployment/processor -n mission-telemetry --timeout=180s
+
+      - name: Create Kafka topics
+        run: |
+          kubectl exec -n mission-telemetry redpanda-0 -c redpanda -- rpk topic create telemetry.raw --partitions 3
+          kubectl exec -n mission-telemetry redpanda-0 -c redpanda -- rpk topic create telemetry.processed --partitions 3
+          kubectl exec -n mission-telemetry redpanda-0 -c redpanda -- rpk topic create telemetry.dlq --partitions 1
+
+      - name: Real functional smoke test through the deployed stack
+        run: |
+          kubectl port-forward -n mission-telemetry svc/api-service 8000:8000 &
+          kubectl port-forward -n mission-telemetry svc/ingest-service 8081:8081 &
+          sleep 5
+          TOKEN=$(curl -sf -X POST http://localhost:8000/v1/auth/register -H "Content-Type: application/json" \
+            -d '{"org_name":"CI Org","email":"ci@example.com","password":"correct-horse-battery"}' | jq -r .access_token)
+          ORG_ID=$(curl -sf http://localhost:8000/v1/auth/me -H "Authorization: Bearer $TOKEN" | jq -r .org_id)
+          VEHICLE_ID=$(curl -sf -X POST http://localhost:8000/v1/vehicles -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" -d '{"name":"CI Vehicle"}' | jq -r .id)
+          FLIGHT_ID=$(curl -sf -X POST http://localhost:8000/v1/flights -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" -d "{\"vehicle_id\":\"$VEHICLE_ID\",\"name\":\"CI Flight\"}" | jq -r .id)
+          curl -sf -X POST http://localhost:8081/v1/ingest -H "Content-Type: application/json" -d "{
+            \"org_id\":\"$ORG_ID\",\"vehicle_id\":\"$VEHICLE_ID\",\"flight_id\":\"$FLIGHT_ID\",
+            \"seq_no\":0,\"ts\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"phase\":\"powered\",
+            \"alt_ft\":1000,\"vel_ft_s\":500,\"accel_g\":2.0,\"qw\":1,\"qx\":0,\"qy\":0,\"qz\":0
+          }"
+          sleep 3
+          curl -sf "http://localhost:8000/v1/flights/$FLIGHT_ID/telemetry" -H "Authorization: Bearer $TOKEN" \
+            | tee /tmp/result.json
+          # Fail the job loudly if the point never actually landed --
+          # a 200 with an empty list is not success here.
+          test "$(jq '.points | length' /tmp/result.json)" = "1"
+
+      - name: Dump pod status/logs on failure
+        if: failure()
+        run: |
+          kubectl get pods -n mission-telemetry
+          kubectl describe pods -n mission-telemetry
+          kubectl logs -n mission-telemetry -l app=api-service --tail=100 || true
+          kubectl logs -n mission-telemetry -l app=processor --tail=100 || true

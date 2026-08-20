@@ -1,0 +1,41 @@
+# Redpanda's own official chart, not Bitnami's/a generic "kafka" chart
+# -- same reasoning as ADR-0006 (Kafka-wire-protocol-compatible,
+# single-binary, no ZooKeeper), now for the cluster instead of just
+# local docker-compose. Single node, TLS/SASL off: this is a demo
+# cluster on a laptop, not a security boundary worth the complexity
+# here -- see k8s/README.md for what a real deployment would add back.
+statefulset:
+  replicas: 1
+
+resources:
+  cpu:
+    cores: 1
+  memory:
+    container:
+      # Chart requires enough headroom above Redpanda's own
+      # memory+reserve calculation for 1 core -- 1.5Gi is comfortably
+      # above the ~1.1GiB idle measured from local docker-compose (see
+      # k8s/README.md), not a number the chart's own validation just
+      # happened to accept.
+      max: 1.5Gi
+
+storage:
+  persistentVolume:
+    enabled: true
+    size: 2Gi
+
+tls:
+  enabled: false
+
+auth:
+  sasl:
+    enabled: false
+
+console:
+  enabled: false # one fewer moving part for a demo cluster
+
+# Internal-only listener -- nothing outside the cluster needs to reach
+# Kafka directly; only ingest-service, processor, and api-service's
+# kafka_bridge do, and they're all in-cluster.
+external:
+  enabled: false

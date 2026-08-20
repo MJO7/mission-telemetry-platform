@@ -9,6 +9,12 @@ __pycache__/
 
 # Env / secrets
 .env
+k8s/base/secret.yaml
+k8s/kubeconfig*
+ansible/multipass_key
+ansible/multipass_key.pub
+ansible/*.retry
+ansible/fetched-kubeconfig.yaml
 
 # Go
 services/ingest-service/ingest-service

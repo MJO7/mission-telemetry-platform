@@ -1,0 +1,37 @@
+# Non-secret config -- see 02-secret.example.yaml for the sensitive
+# half (DB URL, JWT signing key). pydantic-settings (app/core/config.py)
+# reads these by the same env-var names it already uses locally
+# (API_ env_prefix), so nothing in the app itself is k8s-aware; only
+# where the values come from changes.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-config
+  namespace: mission-telemetry
+data:
+  API_ENVIRONMENT: "production"
+  API_CORS_ORIGINS: '["http://web"]'
+  API_KAFKA_BROKERS: '["redpanda:9093"]'
+  API_REDIS_URL: "redis://redis-master:6379/0"
+  API_JWT_ALGORITHM: "HS256"
+  API_ACCESS_TOKEN_TTL_MINUTES: "10"
+  API_REFRESH_TOKEN_TTL_DAYS: "30"
+  API_WS_QUEUE_MAXSIZE: "100"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ingest-config
+  namespace: mission-telemetry
+data:
+  KAFKA_BROKERS: "redpanda:9093"
+  PORT: "8081"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: processor-config
+  namespace: mission-telemetry
+data:
+  API_KAFKA_BROKERS: '["redpanda:9093"]'
+  API_REDIS_URL: "redis://redis-master:6379/0"

@@ -1,0 +1,157 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-service
+  namespace: mission-telemetry
+spec:
+  selector:
+    app: api-service
+  ports:
+    - port: 8000
+      targetPort: 8000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-service
+  namespace: mission-telemetry
+spec:
+  replicas: 2 # Phase 4's whole point: >1 replica, fronted by this one Service
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # maxUnavailable: 0 -- a rollout must never drop capacity below
+      # what's already running; every old pod stays serving until its
+      # replacement is Ready (see the readinessProbe below), not just
+      # started. maxSurge: 1 is what makes that possible without a
+      # deadlock: there has to be room to run one extra pod temporarily
+      # while the old one it's replacing is still up.
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: api-service
+  template:
+    metadata:
+      labels:
+        app: api-service
+    spec:
+      initContainers:
+        # Runs once per pod start, not once per rollout -- alembic
+        # upgrade head is idempotent (a no-op against an already-current
+        # schema), so this is simpler and safer than coordinating a
+        # separate migration Job racing against pod startup order.
+        - name: migrate
+          image: mission-telemetry/api-service:local
+          command: ["alembic", "upgrade", "head"]
+          envFrom:
+            - configMapRef:
+                name: api-config
+            - secretRef:
+                name: api-secrets
+      containers:
+        - name: api-service
+          image: mission-telemetry/api-service:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: api-config
+            - secretRef:
+                name: api-secrets
+          # Liveness: is the process itself wedged? No dependency checks
+          # (see app/main.py's healthz docstring) -- a DB blip shouldn't
+          # cost this pod a restart on top of the outage.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          # Readiness: can THIS pod serve traffic right now, gated on a
+          # real round trip to Postgres (app/main.py's /readyz). A pod
+          # that fails this gets pulled from the Service's endpoints --
+          # no traffic routed to it -- without being killed, which is
+          # exactly what a rolling update needs to not serve 502s from a
+          # replica whose DB connection hasn't come up yet.
+          # timeoutSeconds/failureThreshold loosened from an initial 3s/2
+          # after a real k6 load test (k8s/README.md's HPA demo) showed
+          # this exact probe becoming a liability under its own load: 80
+          # concurrent VUs CPU-starved every pod badly enough that the
+          # readiness probe's own request timed out, pulling pods from
+          # the Service right when capacity was needed most --
+          # amplifying the overload the HPA was trying to scale out of.
+          # A probe checking a real dependency was the right call
+          # (app/main.py's /readyz); not giving it room to tolerate
+          # transient contention before yanking capacity was the gap.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # maxUnavailable: 0 alone is NOT actually zero-downtime -- this
+          # was measured, not assumed (see k8s/README.md's rollout demo):
+          # a real load test against this exact config, with no preStop
+          # hook, dropped a handful of requests (curl exit 000,
+          # connection refused) during termination. The cause is a race,
+          # not a bug in the Deployment's own rollout logic: when a pod
+          # starts terminating, kubelet sends SIGTERM immediately, but
+          # removing that pod from the Service's Endpoints (and kube-proxy
+          # propagating that to iptables/ipvs on every node) happens
+          # concurrently, not before. For a brief window, traffic can
+          # still be routed to a pod that's already shutting down. A
+          # preStop hook that sleeps before the container actually
+          # receives SIGTERM buys time for endpoint removal to propagate
+          # first, so by the time the process actually stops accepting
+          # connections, nothing is routing to it anymore.
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 5
+          # Revised after measuring the real thing: `kubectl top pod` in
+          # this cluster showed ~90-110Mi, not the ~48MB an idle local
+          # `ps` RSS measurement suggested -- in-cluster, this process
+          # also holds a live aiokafka consumer (the WS fan-out bridge)
+          # and Redis connections that the idle local measurement never
+          # had warmed up. Trust the in-cluster number; it's what's
+          # actually running. See k8s/README.md.
+          # CPU limit also raised (500m -> 1000m) after the same load
+          # test: the k3d node had 10 full cores free (kubectl describe
+          # node showed 29% CPU allocated at 6 replicas x 500m limits)
+          # -- the constraint was each pod's own per-pod ceiling, not
+          # real node scarcity, so raising it is recovering real
+          # available capacity, not overcommitting past what's there.
+          resources:
+            requests:
+              cpu: 150m
+              memory: 128Mi
+            limits:
+              cpu: 1000m
+              memory: 384Mi
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: api-service
+  namespace: mission-telemetry
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: api-service
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          # % of the *request* (100m), not the limit -- scaling off
+          # request utilization is what keeps this responsive well
+          # before a pod is anywhere near its hard limit.
+          averageUtilization: 60
