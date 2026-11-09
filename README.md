@@ -1,4 +1,5 @@
 # Mission Telemetry Platform
+[![CI](https://github.com/MJO7/mission-telemetry-platform/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/MJO7/mission-telemetry-platform/actions/workflows/ci.yml)
 
 A distributed, multi-tenant telemetry platform for tracking rocket flights —
 built incrementally, phase by phase, as a learning project. See
@@ -46,7 +47,9 @@ reads the continuous aggregate directly. Both are wired into the flight
 detail page. `docs/BENCHMARKS.md` has the real, measured before/after:
 the composite index cuts buffer reads ~42x on paginated queries, and the
 continuous aggregate is ~224x faster than computing the same summary
-live over 500k raw points.
+live over the subject flight's 500k raw points (73.4 ms live vs 0.33 ms
+from `telemetry_1m`; the benchmark table holds ~1M rows in total, but
+this query reads only the 500k belonging to one flight).
 
 ## Quickstart
 
